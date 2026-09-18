@@ -18,7 +18,7 @@ MODULE_ID=${MODPATH##*/}
 NVBASE=${MODPATH%/*/*}
 PREV_BACKUP=$NVBASE/modules/$MODULE_ID/backup/display_brightness_app_list.xml
 
-if [ -n "$BRIGHTNESS_XML_SRC" ]; then
+if [ -n "${BRIGHTNESS_XML_SRC:-}" ]; then
     SRC=$BRIGHTNESS_XML_SRC
     ui_print "  使用指定的源文件: $SRC"
 elif [ -f "$PREV_BACKUP" ]; then
