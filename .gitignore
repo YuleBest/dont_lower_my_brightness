@@ -1,0 +1,4 @@
+/dist/
+/reference/
+# CI 从 changelog.md 提取的 Release 正文（release.yaml 生成）
+/release-notes.md

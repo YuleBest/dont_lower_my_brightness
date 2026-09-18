@@ -1,0 +1,7 @@
+{
+  "id": "dont_lower_my_brightness",
+  "name": "dont_lower_my_brightness",
+  "author": "Yule",
+  "description": "禁止 ColorOS 在特定应用中降低屏幕亮度",
+  "updateJson": "https://raw.githubusercontent.com/YuleBest/dont_lower_my_brightness/main/update.json"
+}

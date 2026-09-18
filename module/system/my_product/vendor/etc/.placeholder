@@ -1,0 +1,2 @@
+空目录占位：真实文件由 customize.sh 在刷入时生成。
+此文件不会进 zip（build.sh 排除 .placeholder）。

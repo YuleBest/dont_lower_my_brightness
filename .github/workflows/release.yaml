@@ -1,0 +1,209 @@
+name: Release
+
+# 打 tag 并 push 时自动发版：
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# 只认 v 开头的 tag。产物与 update.json 里的 zipUrl 必须对得上，
+# 否则管理器检查更新时下载会失败，所以下面有一道 tag 与 version 的一致性校验。
+on:
+  push:
+    tags:
+      - "v*"
+
+# 创建 Release 需要写权限；其余权限一律不给
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Go
+        uses: actions/setup-go@v7
+        with:
+          # 版本跟随 go.mod，避免这里和 go.mod 各写一份而漂移
+          go-version-file: golang/go.mod
+          # 本项目无第三方依赖（无 go.sum），关掉缓存免得 setup-go 报找不到 go.sum
+          cache: false
+
+      - name: 校验 tag 与 update.json 一致
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+
+          if [ "${TAG#v}" = "$TAG" ]; then
+            echo "错误: tag 必须以 v 开头（如 v0.1.0），当前为 $TAG" >&2
+            exit 1
+          fi
+
+          version=$(python3 -c "import json;print(json.load(open('update.json'))['version'])")
+          if [ "$TAG" != "$version" ]; then
+            echo "错误: tag ($TAG) 与 update.json 的 version ($version) 不一致。" >&2
+            echo "      产物名与 update.json 的 zipUrl 都取自 version，" >&2
+            echo "      两者不一致会让管理器下载到名字对不上的附件。" >&2
+            echo "      请先把 update.json 的 version / versionCode 改成 $TAG 再打 tag。" >&2
+            exit 1
+          fi
+
+          # 仓库改名或换 owner 后 update.json 会指向旧地址，这里提前拦住
+          zipurl=$(python3 -c "import json;print(json.load(open('update.json'))['zipUrl'])")
+          case "$zipurl" in
+            *"/$REPO/releases/download/$TAG/"*)
+              echo "zipUrl 指向本仓库且 tag 正确: $zipurl" ;;
+            *)
+              echo "错误: update.json 的 zipUrl 与当前仓库/tag 不符:" >&2
+              echo "      $zipurl" >&2
+              echo "      期望形如 https://github.com/$REPO/releases/download/$TAG/<id>_${TAG}.zip" >&2
+              exit 1 ;;
+          esac
+
+      - name: 运行测试
+        run: go test ./...
+        working-directory: golang
+
+      - name: 构建模块
+        # build.sh 会交叉编译 arm64/arm 两个架构并打包成 dist/<id>_<version>.zip
+        run: ./build.sh
+
+      - name: 校验产物不会导致无法开机
+        # 最重要的一道闸：<app> 元素必须被整个删除。留下 <app></app> 这种空元素，
+        # 系统会把空字符串当包名解析，直接导致无法开机。这里用一份与真实文件同构的
+        # 样本跑一遍交叉编译产物（经 QEMU），确认输出里没有 <app> 残留。
+        run: |
+          set -eu
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static >/dev/null
+
+          # 样本覆盖真实文件的几个要点：注释、缩进、method 内外的 <app>、
+          # 以 app 开头但不同的元素名、以及需要原样保留的各类参数
+          cat > /tmp/fixture.xml <<'XMLEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!-- 这个文件会位于 /my_product/vendor/etc/display_brightness_app_list.xml -->
+          <root>
+              <version>20251212</version>
+
+              <!--Expressiveness App Reduction v1.5-->
+              <method id="0">
+                  <!-- 浏览器 -->
+                  <app>com.android.chrome</app>
+                  <!-- 钱包 -->
+                  <app>com.finshell.wallet</app>
+                  <switch>1</switch>
+                  <nit mode="0">70,130,380,500</nit>
+                  <ratio mode="0">0.0,0.15,0.15,0.0</ratio>
+                  <rate_in mode="0">0,10,10,0</rate_in>
+                  <rate_out mode="0">0,15,15,0</rate_out>
+              </method>
+
+              <global_brightness_limit nit="1200">
+                  <app>com.android.launcher</app>
+              </global_brightness_limit>
+
+              <dolby_temperature_limit_nit>
+                  <nits>9999</nits>
+              </dolby_temperature_limit_nit>
+
+              <game_edr>
+                  <origin_nit factor='25'>0,60,60,150,150,600,600,2000</origin_nit>
+              </game_edr>
+
+              <camera_limit_nit>
+                  <normal>650</normal>
+              </camera_limit_nit>
+
+              <app_reduce_30hz_on_support>1</app_reduce_30hz_on_support>
+          </root>
+          XMLEOF
+
+          tool=dist/build/bin/brightness-xml-arm64
+          out=/tmp/out.xml
+          qemu-aarch64-static "$tool" -o "$out" /tmp/fixture.xml
+
+          # 不能简单 grep '<app'：配置里还有 <app_reduce_30hz_on_support> 这类同前缀元素
+          if grep -qE '<app[[:space:]]*[/>]' "$out"; then
+            echo "错误: 生成的配置中残留 <app> 元素，会导致无法开机！" >&2
+            grep -nE '<app[[:space:]]*[/>]' "$out" | head -5 >&2
+            exit 1
+          fi
+
+          # 参数段落必须原样保留，否则系统行为会被改变
+          for key in version nit ratio rate_in rate_out \
+                     dolby_temperature_limit_nit game_edr camera_limit_nit \
+                     global_brightness_limit app_reduce_30hz_on_support; do
+            grep -q "<$key" "$out" || { echo "错误: 输出丢失了 <$key>" >&2; exit 1; }
+          done
+
+          # <app> 确实是被删掉了，而不是整份文件被写坏
+          grep -q '<version>20251212</version>' "$out" \
+            || { echo "错误: 输出异常，version 丢失" >&2; exit 1; }
+          if grep -q 'com\.' "$out"; then
+            echo "错误: 输出中仍残留包名" >&2
+            exit 1
+          fi
+
+          echo "安全检查通过：无 <app> 残留，参数段落完整"
+
+      - name: 从 changelog.md 提取本次版本的更新内容
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - "$TAG" <<'PYEOF'
+          import pathlib, re, sys
+
+          tag = sys.argv[1]
+          text = pathlib.Path("changelog.md").read_text(encoding="utf-8")
+
+          # 取 "## <tag>" 这一节，直到下一个同级 "## " 标题为止。
+          # 标题写成 "## v0.1.0" 或 "## 0.1.0" 都认，所以先去掉 tag 的 v 前缀，
+          # 再把 v 作为可选部分匹配。
+          core = tag[1:] if tag.startswith("v") else tag
+          pattern = re.compile(
+              rf"^##\s+v?{re.escape(core)}\s*$(.*?)(?=^##\s|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          m = pattern.search(text)
+          notes = m.group(1).strip() if m else ""
+
+          if notes:
+              print(f"已提取 changelog.md 中 {tag} 的更新内容（{len(notes)} 字符）")
+          else:
+              # 没写对应章节时退回整份 changelog，好过让 release 正文空着
+              notes = text.strip()
+              print(f"警告: changelog.md 中没有 {tag} 章节，改用整份文件内容", file=sys.stderr)
+
+          pathlib.Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
+          PYEOF
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # 正文取自 changelog.md 里本次 tag 对应的一节
+          # 新增一个文件或改 workflow 后重跑时，release 可能已存在，
+          # 这会让 gh release create 直接失败，所以分开处理（也让重跑是安全的）
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，更新正文并覆盖上传产物"
+            gh release edit "$TAG" --notes-file release-notes.md
+            gh release upload "$TAG" dist/*.zip --clobber
+          else
+            gh release create "$TAG" dist/*.zip \
+              --title "$TAG" \
+              --notes-file release-notes.md
+          fi
+
+      - name: 汇总
+        run: |
+          {
+            echo "### 发版完成"
+            echo
+            echo "- tag: \`${{ github.ref_name }}\`"
+            ls -l dist/*.zip | awk '{printf "- 产物: `%s`（%d 字节）\n", $9, $5}'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,3 @@
+模块自带的可执行文件放这里，脚本中用 "$MODDIR/bin/xxx" 调用。
+不要放 system/bin/ —— 那会 overlay 到系统 /system/bin，即替换系统二进制。
+本文件仅作占位，打包时会被忽略。
