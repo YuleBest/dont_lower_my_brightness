@@ -56,7 +56,7 @@ fi
 META_DIR="$BUILD/META-INF/com/google/android"
 mkdir -p "$META_DIR"
 
-cat > "$META_DIR/update-binary" <<'UPDATE_BINARY_EOF'
+cat >"$META_DIR/update-binary" <<'UPDATE_BINARY_EOF'
 #!/sbin/sh
 
 #################
@@ -92,39 +92,32 @@ install_module
 exit 0
 UPDATE_BINARY_EOF
 
-printf '#MAGISK\n' > "$META_DIR/updater-script"
+printf '#MAGISK\n' >"$META_DIR/updater-script"
 
 # update-binary 由 recovery 直接执行，必须有可执行位
 chmod 755 "$META_DIR/update-binary"
 chmod 644 "$META_DIR/updater-script"
 
 # ---- 5. golang/ 交叉编译 ----
-# 这个工具在**刷入时**的设备上运行：读设备自己的 display_brightness_app_list.xml，
-# 清空其中的 <app> 后写到模块的 system/ 目录下（见 module/customize.sh）。
-# 因此不能只在构建机跑一次 —— 各机型的应用列表与 nit/ratio 参数都不同，
-# 必须用设备上那一份生成。
-#
-# 落点 $MODPATH/bin/brightness-xml-<arch> 由 customize.sh 按 $ARCH 选择，
-# 两边必须一致。文件名不带点号后缀：步骤 8 打包时只为「.sh 或无后缀」的文件
-# 保留可执行位，写成 brightness-xml.arm64 会丢掉 x 位。
-#
-# CGO_ENABLED=0 + GOOS=linux 产出静态链接二进制，无需 libc 即可在 Android 上跑
-# （不依赖 bionic）。-trimpath 与空 buildid 让同样源码产出逐字节相同的文件。
 mkdir -p "$BUILD/bin"
-for _arch in arm64 arm; do
-    case "$_arch" in
-        arm64) GOARCH=arm64 ;;
-        arm) GOARCH=arm GOARM=7 ;;
-    esac
-    echo "编译 golang/ -> bin/brightness-xml-$_arch ($GOARCH)"
-    (
-        cd "$ROOT/golang"
-        CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH GOARM=${GOARM:-} \
-            go build -trimpath -buildvcs=false \
-            -ldflags='-s -w -buildid=' \
-            -o "$BUILD/bin/brightness-xml-$_arch" .
-    )
-done
+
+TOOL_BIN=$BUILD/bin/brightness-xml-arm64
+echo "编译 golang/ -> bin/brightness-xml-arm64 (arm64)"
+(
+    cd "$ROOT/golang"
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+        go build -trimpath -buildvcs=false \
+        -ldflags='-s -w -buildid=' \
+        -o "$TOOL_BIN" .
+)
+
+if ! command -v upx >/dev/null 2>&1; then
+    echo "错误: 未找到 upx，无法压缩 bin/brightness-xml-arm64" >&2
+    echo "      Debian/Ubuntu: apt-get install upx-ucl" >&2
+    exit 1
+fi
+echo "upx -9 压缩 bin/brightness-xml-arm64"
+upx -9 --quiet "$TOOL_BIN"
 
 # ---- 6. 生成 module.prop（由 meta.json + update.json 合成，LF 换行）----
 python3 - "$ROOT" <<'PYEOF'
@@ -210,4 +203,4 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
 PYEOF
 
 # ---- 9. 报告 ----
-echo "产出: $OUT ($(wc -c < "$OUT") 字节)"
+echo "产出: $OUT ($(wc -c <"$OUT") 字节)"
