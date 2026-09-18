@@ -2,7 +2,7 @@
 
 禁止 ColorOS 在特定应用中自动降低屏幕亮度
 
-ColorOS 会依据 `/my_product/vendor/etc/display_brightness_app_list.xml` 里的应用列表主动下调屏幕亮度。本模块在**刷入时**读取设备配置，把列表清空后通过 overlay 挂载覆盖回去，系统匹配不到任何应用，亮度就不再被下调。
+ColorOS 会依据 `/my_product/vendor/etc/display_brightness_app_list.xml` 里的应用列表主动下调屏幕亮度。本模块在**刷入时**读取设备配置，把列表清空后挂载覆盖回去，系统匹配不到任何应用，亮度就不再被下调。
 
 本模块仅会禁止 ColorOS 根据应用列表下调亮度，不会影响系统的其他亮度调节逻辑（如自动亮度、护眼模式、夜间模式、温控等）。
 
